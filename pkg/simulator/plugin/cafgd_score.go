@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/hkust-adsl/kubernetes-scheduler-simulator/pkg/simontype"
+	"github.com/hkust-adsl/kubernetes-scheduler-simulator/pkg/type"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/kubernetes/pkg/scheduler/framework"

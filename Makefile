@@ -11,7 +11,7 @@ all: build
 
 .PHONY: build
 build:
-	GOARCH=$(GOARCH) GOOS=$(GOOS) go build -v -o $(OUTPUT_DIR)/$(BINARY_NAME) ./cmd
+	GOARCH=$(GOARCH) GOOS=$(GOOS) go build -mod=mod -v -o $(OUTPUT_DIR)/$(BINARY_NAME) ./cmd
 
 .PHONY: darwin_build
 darwin_build:
