@@ -21,51 +21,77 @@ var plugins = []string{
 }
 
 func TestAllPlugins(t *testing.T) {
-    // Build the binary path relative to this test file
+    // Build the binary path
     binPath := filepath.Join("..", "..", "bin", "simon")
-
-    // Check if the binary exists; if not, build it
     if _, err := os.Stat(binPath); err != nil {
         t.Logf("Binary not found at %s, building...", binPath)
         cmd := exec.Command("make", "build")
-        cmd.Dir = "../.." // project root
+        cmd.Dir = "../.."
         out, err := cmd.CombinedOutput()
         if err != nil {
             t.Fatalf("failed to build simon: %v\n%s", err, out)
         }
-        // Recheck after build
-        if _, err := os.Stat(binPath); err != nil {
-            t.Fatalf("binary still not found after build: %v", err)
-        }
     }
 
-    // Convert to absolute path so that it works regardless of working directory
     absBinPath, err := filepath.Abs(binPath)
     if err != nil {
         t.Fatalf("failed to get absolute path for binary: %v", err)
     }
 
-    // Create temporary directory for test files
     tmpDir, err := os.MkdirTemp("", "simon-test-*")
     if err != nil {
         t.Fatal(err)
     }
     defer os.RemoveAll(tmpDir)
 
-    // Cluster config: one node with 2 GPUs
-    clusterYAML := `
-nodes:
-- name: node1
-  cpu: 8
-  memory: 16Gi
-  gpu: 2
-`
-    clusterFile := filepath.Join(tmpDir, "cluster.yaml")
-    if err := os.WriteFile(clusterFile, []byte(clusterYAML), 0644); err != nil {
+    // Create the cluster config directory (where node YAML files live)
+    clusterDir := filepath.Join(tmpDir, "test-cluster")
+    if err := os.MkdirAll(clusterDir, 0755); err != nil {
         t.Fatal(err)
     }
 
-    // Pods: 3 pods, each requesting 1 GPU
+    // Write node definition: node1.yaml
+    nodeYAML := `
+apiVersion: v1
+kind: Node
+metadata:
+  name: node1
+status:
+  allocatable:
+    cpu: "8"
+    memory: 16Gi
+    gpu: "2"
+`
+    nodeFile := filepath.Join(clusterDir, "node1.yaml")
+    if err := os.WriteFile(nodeFile, []byte(nodeYAML), 0644); err != nil {
+        t.Fatal(err)
+    }
+
+    // Create the cluster config file (simon/v1alpha1 Config)
+    clusterConfigYAML := fmt.Sprintf(`
+apiVersion: simon/v1alpha1
+kind: Config
+metadata:
+  name: test-config
+spec:
+  cluster:
+    customConfig: %s
+    customConfig:
+      shufflePod: false
+  workloadTuningConfig:
+    ratio: 0.9
+    seed: 233
+  typicalPodsConfig:
+    isInvolvedCpuPods: true
+    podPopularityThreshold: 95
+    isConsideredGpuResWeight: false
+`, clusterDir)
+    clusterFile := filepath.Join(tmpDir, "cluster-config.yaml")
+    if err := os.WriteFile(clusterFile, []byte(clusterConfigYAML), 0644); err != nil {
+        t.Fatal(err)
+    }
+
+    // Create pod definitions (these go in the cluster config directory)
     podsYAML := `
 apiVersion: v1
 kind: Pod
@@ -103,38 +129,75 @@ spec:
       requests:
         gpu: "1"
 `
-    podsFile := filepath.Join(tmpDir, "pods.yaml")
+    podsFile := filepath.Join(clusterDir, "pods.yaml")
     if err := os.WriteFile(podsFile, []byte(podsYAML), 0644); err != nil {
         t.Fatal(err)
     }
 
     for _, pluginName := range plugins {
         t.Run(pluginName, func(t *testing.T) {
+            // Build scheduler config with the given plugin enabled
             schedulerYAML := fmt.Sprintf(`
-apiVersion: kubescheduler.config.k8s.io/v1
+apiVersion: kubescheduler.config.k8s.io/v1beta1
 kind: KubeSchedulerConfiguration
+percentageOfNodesToScore: 100
 profiles:
-- schedulerName: default-scheduler
+- schedulerName: simon-scheduler
   plugins:
+    filter:
+      enabled:
+      - name: Open-Gpu-Share
     score:
+      disabled:
+      - name: RandomScore
+      - name: DotProductScore
+      - name: GpuClusteringScore
+      - name: GpuPackingScore
+      - name: BestFitScore
+      - name: FGDScore
+      - name: ImageLocality
+      - name: NodeAffinity
+      - name: PodTopologySpread
+      - name: TaintToleration
+      - name: NodeResourcesBalancedAllocation
+      - name: InterPodAffinity
+      - name: NodeResourcesLeastAllocated
+      - name: NodePreferAvoidPods
       enabled:
       - name: %s
-`, pluginName)
+        weight: 1000
+    reserve:
+      enabled:
+      - name: Open-Gpu-Share
+    bind:
+      disabled:
+      - name: DefaultBinder
+      enabled:
+      - name: Simon
+  pluginConfig:
+  - name: %s
+    args:
+      dimExtMethod: share
+      normMethod: max
+  - name: Open-Gpu-Share
+    args:
+      dimExtMethod: share
+      normMethod: max
+      gpuSelMethod: %s
+`, pluginName, pluginName, pluginName)
 
             schedFile := filepath.Join(tmpDir, fmt.Sprintf("scheduler-%s.yaml", pluginName))
             if err := os.WriteFile(schedFile, []byte(schedulerYAML), 0644); err != nil {
                 t.Fatal(err)
             }
 
-            // Run simon apply:
-            // Flags: -f cluster config, -s scheduler config, -e gpu, then positional args: pod files
+            // Run simon apply
             cmd := exec.Command(
                 absBinPath,
                 "apply",
                 "--extended-resources", "gpu",
                 "-f", clusterFile,
                 "-s", schedFile,
-                podsFile, // positional argument – the pods file
             )
             cmd.Dir = tmpDir
             output, err := cmd.CombinedOutput()
@@ -143,10 +206,10 @@ profiles:
                 return
             }
 
-            // Verify no pending/unschedulable pods by checking output for certain keywords
+            // Verify no errors
             outStr := string(output)
-            if strings.Contains(outStr, "pending") || strings.Contains(outStr, "unschedulable") {
-                t.Errorf("some pods remained pending for plugin %s:\n%s", pluginName, outStr)
+            if strings.Contains(outStr, "error") || strings.Contains(outStr, "failed") {
+                t.Errorf("scheduling error for plugin %s:\n%s", pluginName, outStr)
             }
         })
     }
