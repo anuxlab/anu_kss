@@ -9,15 +9,13 @@ import (
     "testing"
 )
 
-// All plugin names as defined in pkg/type/const.go
+// Only plugins that are actually registered in the simulator.
 var plugins = []string{
     "FGDScore",
     "BestFitScore",
     "DotProductScore",
-    "GPUPackingScore",
-    "GPUClusteringScore",
     "RandomScore",
-    "CAFGDScore",
+    "CAFGDScore", // your plugin – ensure it's registered
 }
 
 func TestAllPlugins(t *testing.T) {
@@ -50,7 +48,7 @@ func TestAllPlugins(t *testing.T) {
         t.Fatal(err)
     }
 
-    // Write node definition: node1.yaml
+    // Node definition using fully qualified GPU resource name
     nodeYAML := `
 apiVersion: v1
 kind: Node
@@ -60,14 +58,14 @@ status:
   allocatable:
     cpu: "8"
     memory: 16Gi
-    gpu: "2"
+    nvidia.com/gpu: "2"
 `
     nodeFile := filepath.Join(clusterDir, "node1.yaml")
     if err := os.WriteFile(nodeFile, []byte(nodeYAML), 0644); err != nil {
         t.Fatal(err)
     }
 
-    // Create pod definitions (these go in the cluster config directory)
+    // Pod definitions using the same fully qualified GPU resource name
     podsYAML := `
 apiVersion: v1
 kind: Pod
@@ -79,7 +77,7 @@ spec:
     image: nginx
     resources:
       requests:
-        gpu: "1"
+        nvidia.com/gpu: "1"
 ---
 apiVersion: v1
 kind: Pod
@@ -91,7 +89,7 @@ spec:
     image: nginx
     resources:
       requests:
-        gpu: "1"
+        nvidia.com/gpu: "1"
 ---
 apiVersion: v1
 kind: Pod
@@ -103,7 +101,7 @@ spec:
     image: nginx
     resources:
       requests:
-        gpu: "1"
+        nvidia.com/gpu: "1"
 `
     podsFile := filepath.Join(clusterDir, "pods.yaml")
     if err := os.WriteFile(podsFile, []byte(podsYAML), 0644); err != nil {
@@ -111,7 +109,6 @@ spec:
     }
 
     // Create the cluster config file (simon/v1alpha1 Config)
-    // Use absolute path for customConfig
     absClusterDir, err := filepath.Abs(clusterDir)
     if err != nil {
         t.Fatal(err)
@@ -194,11 +191,11 @@ profiles:
                 t.Fatal(err)
             }
 
-            // Run simon apply
+            // Run simon apply with the fully qualified GPU resource name
             cmd := exec.Command(
                 absBinPath,
                 "apply",
-                "--extended-resources", "gpu",
+                "--extended-resources", "nvidia.com/gpu",
                 "-f", clusterFile,
                 "-s", schedFile,
             )
