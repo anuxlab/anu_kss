@@ -30,3 +30,11 @@ linux_build:
 .PHONY: clean
 clean:
 	rm -f $(OUTPUT_DIR)/*
+
+# ---------- Test targets ----------
+.PHONY: test-integration
+test-integration:
+	go test -v ./test/integration
+
+.PHONY: test
+test: test-integration

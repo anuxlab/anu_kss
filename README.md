@@ -96,3 +96,46 @@ GPU-related plugin has been merged into the main branch of [open-simulator](http
 ## ⏳ TODO
 
 - [ ] Add a minikube running example to demonstrate how the simulator schedules pods in a **real** Kubernetes cluster.
+
+-----------------------------
+
+# Run and Verify
+--------------
+    Place the test file at test/integration/integration_test.go.
+
+    Add the workflow file.
+
+    Commit and push – GitHub Actions will run the tests automatically.
+
+You can also run locally:
+bash
+
+````
+make build
+make test-integration
+````
+
+# What This Test Does
+--------------------
+    It builds the simon binary (if not already present).
+
+    For each plugin, it creates a temporary cluster configuration (1 node, 2 GPUs) and a set of 3 pods (each requesting 1 GPU).
+
+    It runs simon apply with that plugin’s scheduler configuration.
+
+    It checks that the command exits successfully and that no "pending" or "unschedulable" messages appear in the output.
+
+This simple test exercises the entire stack: configuration parsing, plugin registration, scheduling simulation, and final cluster state. If your CAFGD plugin is correctly registered, it will be tested alongside all the built‑in plugins.
+
+# Extending the Test
+-------------------
+You can enhance it to:
+
+    Parse the final cluster state JSON (if the simulator outputs it) to verify exact pod placements.
+
+    Compare scheduling decisions across plugins (e.g., check that CAFGD uses a different node than Best‑fit).
+
+    Run with different cluster sizes and pod numbers.
+
+But for a small and simple validation, the above is sufficient to catch integration regressions.
+
