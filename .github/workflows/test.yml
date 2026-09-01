@@ -2,13 +2,14 @@ name: Integration Tests
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, cafgd ]   # run on pushes to these branches
   pull_request:
-    branches: [ main ]
+    branches: [ main ]                  # run on PRs targeting main
 
 jobs:
   test:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -16,7 +17,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version: '1.21'   # match your go.mod
 
       - name: Build simon
         run: make build
