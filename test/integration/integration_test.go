@@ -22,9 +22,6 @@ var plugins = []string{
 
 func TestAllPlugins(t *testing.T) {
     // Build the binary path relative to this test file
-    // The test runs from the package directory: test/integration/
-    // The binary is at the project root: ./bin/simon
-    // So the relative path is ../../bin/simon
     binPath := filepath.Join("..", "..", "bin", "simon")
 
     // Check if the binary exists; if not, build it
@@ -40,6 +37,12 @@ func TestAllPlugins(t *testing.T) {
         if _, err := os.Stat(binPath); err != nil {
             t.Fatalf("binary still not found after build: %v", err)
         }
+    }
+
+    // Convert to absolute path so that it works regardless of working directory
+    absBinPath, err := filepath.Abs(binPath)
+    if err != nil {
+        t.Fatalf("failed to get absolute path for binary: %v", err)
     }
 
     // Create temporary directory for test files
@@ -123,9 +126,9 @@ profiles:
                 t.Fatal(err)
             }
 
-            // Run simon apply using the correct binary path
+            // Run simon apply using the absolute binary path
             cmd := exec.Command(
-                binPath, // use the constructed path
+                absBinPath, // absolute path
                 "apply",
                 "--extended-resources", "gpu",
                 "-f", clusterFile,
@@ -133,7 +136,7 @@ profiles:
                 "-p", podsFile,
                 "-o", tmpDir,
             )
-            cmd.Dir = tmpDir // run in the temp directory
+            cmd.Dir = tmpDir // working directory set to temp dir (files are there)
             output, err := cmd.CombinedOutput()
             if err != nil {
                 t.Errorf("simon apply failed for plugin %s: %v\nOutput:\n%s", pluginName, err, output)
