@@ -126,26 +126,27 @@ profiles:
                 t.Fatal(err)
             }
 
-            // Run simon apply using the absolute binary path
+            // Run simon apply:
+            // Flags: -f cluster config, -s scheduler config, -e gpu, then positional args: pod files
             cmd := exec.Command(
-                absBinPath, // absolute path
+                absBinPath,
                 "apply",
                 "--extended-resources", "gpu",
                 "-f", clusterFile,
                 "-s", schedFile,
-                "-p", podsFile,
-                "-o", tmpDir,
+                podsFile, // positional argument – the pods file
             )
-            cmd.Dir = tmpDir // working directory set to temp dir (files are there)
+            cmd.Dir = tmpDir
             output, err := cmd.CombinedOutput()
             if err != nil {
                 t.Errorf("simon apply failed for plugin %s: %v\nOutput:\n%s", pluginName, err, output)
                 return
             }
 
-            // Verify no pending/unschedulable pods
-            if strings.Contains(string(output), "pending") || strings.Contains(string(output), "unschedulable") {
-                t.Errorf("some pods remained pending for plugin %s:\n%s", pluginName, output)
+            // Verify no pending/unschedulable pods by checking output for certain keywords
+            outStr := string(output)
+            if strings.Contains(outStr, "pending") || strings.Contains(outStr, "unschedulable") {
+                t.Errorf("some pods remained pending for plugin %s:\n%s", pluginName, outStr)
             }
         })
     }
