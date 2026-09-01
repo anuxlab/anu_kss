@@ -3,157 +3,96 @@ package plugin
 import (
 	"context"
 	"fmt"
-	"math"
+	"strconv"
 
-	simontype "github.com/hkust-adsl/kubernetes-scheduler-simulator/pkg/type"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	resourcehelper "k8s.io/kubectl/pkg/util/resource"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
+
+	simontype "github.com/hkust-adsl/kubernetes-scheduler-simulator/pkg/type"
+	gpushareutils "github.com/hkust-adsl/kubernetes-scheduler-simulator/pkg/type/open-gpu-share/utils"
+	"github.com/hkust-adsl/kubernetes-scheduler-simulator/pkg/utils"
 )
 
-const CAFGDScorePluginName = "CAFGDScore"
-
-// CAFGDScorePlugin implements the Cluster-Aware FGD algorithm.
+// CAFGDScorePlugin implements the CAFGD scheduling algorithm.
+// Currently it is a placeholder that mirrors the FGD logic.
 type CAFGDScorePlugin struct {
-	handle         framework.Handle
-	typicalPods    *simontype.TargetPodList
-	timeHorizon    int64
-	alpha          float64
-	hierarchical   bool
-	gpuResourceName string
+	handle      framework.Handle
+	typicalPods *simontype.TargetPodList
 }
 
 var _ framework.ScorePlugin = &CAFGDScorePlugin{}
 
 // NewCAFGDScorePlugin creates a new CAFGD plugin instance.
-func NewCAFGDScorePlugin(configuration runtime.Object, handle framework.Handle, typicalPods *simontype.TargetPodList) (framework.Plugin, error) {
+func NewCAFGDScorePlugin(_ runtime.Object, handle framework.Handle, typicalPods *simontype.TargetPodList) (framework.Plugin, error) {
 	plugin := &CAFGDScorePlugin{
-		handle:         handle,
-		typicalPods:    typicalPods,
-		timeHorizon:    3600,
-		alpha:          0.7,
-		hierarchical:   true,
-		gpuResourceName: "gpu",
+		handle:      handle,
+		typicalPods: typicalPods,
 	}
-	// Optionally parse configuration from 'configuration' object.
+	allocateGpuIdFunc[plugin.Name()] = allocateGpuIdBasedOnCAFGDScore
 	return plugin, nil
 }
 
-// Name returns the plugin name.
-func (p *CAFGDScorePlugin) Name() string {
-	return CAFGDScorePluginName
+func (plugin *CAFGDScorePlugin) Name() string {
+	return simontype.CAFGDScorePluginName
 }
 
-// Score computes a score for placing the pod on the given node.
-// Higher score means better placement (lower fragmentation gradient).
-func (p *CAFGDScorePlugin) Score(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) (int64, *framework.Status) {
-	// Get the snapshot of the cluster.
-	snapshot := p.handle.Snapshot()
-	if snapshot == nil {
-		return 0, framework.NewStatus(framework.Error, "snapshot is nil")
+// Score computes a score for the pod-node pair using CAFGD logic.
+// For now, it uses the same logic as FGD – replace this with real CAFGD later.
+func (plugin *CAFGDScorePlugin) Score(ctx context.Context, state *framework.CycleState, p *v1.Pod, nodeName string) (int64, *framework.Status) {
+	if podReq, _ := resourcehelper.PodRequestsAndLimits(p); len(podReq) == 0 {
+		return framework.MaxNodeScore, framework.NewStatus(framework.Success)
 	}
 
-	// Get node info for the target node.
-	targetNodeInfo, err := snapshot.NodeInfos().Get(nodeName)
-	if err != nil {
-		return 0, framework.NewStatus(framework.Error, fmt.Sprintf("node %s not found", nodeName))
+	nodeResPtr := utils.GetNodeResourceViaHandleAndName(plugin.handle, nodeName)
+	if nodeResPtr == nil {
+		return framework.MinNodeScore, framework.NewStatus(framework.Error, fmt.Sprintf("failed to get nodeRes(%s)\n", nodeName))
+	}
+	nodeRes := *nodeResPtr
+
+	podRes := utils.GetPodResource(p)
+	if !utils.IsNodeAccessibleToPod(nodeRes, podRes) {
+		return framework.MinNodeScore, framework.NewStatus(framework.Error, fmt.Sprintf("Node (%s) %s does not match GPU type request of pod %s\n", nodeName, nodeRes.Repr(), podRes.Repr()))
 	}
 
-	// All nodes for cluster-wide fragmentation.
-	allNodes := snapshot.NodeInfos().List()
-
-	// Current fragmentation (baseline).
-	currentFrag := p.calculateClusterFragmentation(allNodes, "", nil)
-
-	// Fragmentation if we add the pod to the target node.
-	newFrag := p.calculateClusterFragmentation(allNodes, nodeName, pod)
-
-	// Fragmentation gradient = increase in fragmentation.
-	gradient := newFrag - currentFrag
-	// Convert gradient to score (0-100, higher is better).
-	// We use a simple heuristic: score = (1 - gradient) * 100, clipped.
-	score := int64((1.0 - gradient) * 100)
-	if score < 0 {
-		score = 0
-	}
-	if score > 100 {
-		score = 100
-	}
-	return score, framework.NewStatus(framework.Success, "")
+	score, _ := calculateCAFGDScore(nodeRes, podRes, plugin.typicalPods)
+	return score, framework.NewStatus(framework.Success)
 }
 
-// ScoreExtensions returns nil (no normalization needed).
-func (p *CAFGDScorePlugin) ScoreExtensions() framework.ScoreExtensions {
+func (plugin *CAFGDScorePlugin) ScoreExtensions() framework.ScoreExtensions {
 	return nil
 }
 
-// calculateClusterFragmentation computes the total fragmentation across all nodes.
-// If addNode is non-empty, the pod is considered added to that node.
-func (p *CAFGDScorePlugin) calculateClusterFragmentation(nodes []*framework.NodeInfo, addNode string, pod *v1.Pod) float64 {
-	if len(nodes) == 0 {
-		return 0.0
-	}
-	var totalFrag float64
-	var totalGPUs int64
-
-	for _, node := range nodes {
-		gpuCap := p.getGPUAllocatable(node)
-		if gpuCap == 0 {
-			continue
+// calculateCAFGDScore is a copy of calculateGpuShareFragExtendScore.
+// Replace this with the actual CAFGD algorithm.
+func calculateCAFGDScore(nodeRes simontype.NodeResource, podRes simontype.PodResource, typicalPods *simontype.TargetPodList) (score int64, gpuId string) {
+	nodeGpuShareFragScore := utils.NodeGpuShareFragAmountScore(nodeRes, *typicalPods)
+	if podRes.GpuNumber == 1 && podRes.MilliGpu < gpushareutils.MILLI { // request partial GPU
+		score, gpuId = 0, ""
+		for i := 0; i < len(nodeRes.MilliGpuLeftList); i++ {
+			if nodeRes.MilliGpuLeftList[i] >= podRes.MilliGpu {
+				newNodeRes := nodeRes.Copy()
+				newNodeRes.MilliCpuLeft -= podRes.MilliCpu
+				newNodeRes.MilliGpuLeftList[i] -= podRes.MilliGpu
+				newNodeGpuShareFragScore := utils.NodeGpuShareFragAmountScore(newNodeRes, *typicalPods)
+				fragScore := int64(sigmoid((nodeGpuShareFragScore-newNodeGpuShareFragScore)/1000) * float64(framework.MaxNodeScore))
+				if gpuId == "" || fragScore > score {
+					score = fragScore
+					gpuId = strconv.Itoa(i)
+				}
+			}
 		}
-		var addPod *v1.Pod
-		if node.Node().Name == addNode {
-			addPod = pod
-		}
-		nodeFrag := p.calculateNodeFragmentation(node, addPod)
-		totalFrag += nodeFrag * float64(gpuCap)
-		totalGPUs += gpuCap
+		return score, gpuId
+	} else {
+		newNodeRes, _ := nodeRes.Sub(podRes)
+		newNodeGpuShareFragScore := utils.NodeGpuShareFragAmountScore(newNodeRes, *typicalPods)
+		return int64(sigmoid((nodeGpuShareFragScore-newNodeGpuShareFragScore)/1000) * float64(framework.MaxNodeScore)), simontype.AllocateExclusiveGpuId(nodeRes, podRes)
 	}
-	if totalGPUs == 0 {
-		return 0.0
-	}
-	return totalFrag / float64(totalGPUs)
 }
 
-// calculateNodeFragmentation computes fragmentation for a single node,
-// optionally including an extra pod.
-func (p *CAFGDScorePlugin) calculateNodeFragmentation(nodeInfo *framework.NodeInfo, addPod *v1.Pod) float64 {
-	gpuCap := p.getGPUAllocatable(nodeInfo)
-	if gpuCap == 0 {
-		return 0.0
-	}
-	// Sum GPU requests from existing pods.
-	var used float64
-	for _, podInfo := range nodeInfo.Pods {
-		used += float64(p.getGPURequest(podInfo.Pod))
-	}
-	// Add the extra pod if specified.
-	if addPod != nil {
-		used += float64(p.getGPURequest(addPod))
-	}
-	// Fragmentation: fractional part of used GPUs divided by capacity.
-	fractional := used - math.Floor(used)
-	return fractional / float64(gpuCap)
-}
-
-// getGPUAllocatable returns the GPU capacity for a node.
-func (p *CAFGDScorePlugin) getGPUAllocatable(nodeInfo *framework.NodeInfo) int64 {
-	if val, ok := nodeInfo.Node().Status.Allocatable[v1.ResourceName(p.gpuResourceName)]; ok {
-		return val.Value()
-	}
-	return 0
-}
-
-// getGPURequest extracts the total GPU request from a pod.
-func (p *CAFGDScorePlugin) getGPURequest(pod *v1.Pod) int64 {
-	if pod == nil {
-		return 0
-	}
-	var total int64
-	for _, container := range pod.Spec.Containers {
-		if val, ok := container.Resources.Requests[v1.ResourceName(p.gpuResourceName)]; ok {
-			total += val.Value()
-		}
-	}
-	return total
+// allocateGpuIdBasedOnCAFGDScore is a copy of allocateGpuIdBasedOnFGDScore.
+func allocateGpuIdBasedOnCAFGDScore(nodeRes simontype.NodeResource, podRes simontype.PodResource, _ simontype.GpuPluginCfg, typicalPods *simontype.TargetPodList) (gpuId string) {
+	_, gpuId = calculateCAFGDScore(nodeRes, podRes, typicalPods)
+	return gpuId
 }
