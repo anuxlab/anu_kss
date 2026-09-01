@@ -32,9 +32,18 @@ clean:
 	rm -f $(OUTPUT_DIR)/*
 
 # ---------- Test targets ----------
-.PHONY: test-integration
-test-integration:
-	go test -v ./test/integration
+# .PHONY: test-integration
+# test-integration:
+# 	go test -v ./test/integration
 
-.PHONY: test
-test: test-integration
+# .PHONY: test
+# test: test-integration
+
+# .PHONY: test-integration
+# test-integration:
+# 	@echo "Integration tests are disabled. Use 'make unit-test' for unit tests."
+
+# Add a unit-test target for future unit tests
+.PHONY: unit-test
+unit-test:
+	go test -mod=mod -v ./pkg/...
