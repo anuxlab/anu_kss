@@ -65,7 +65,7 @@ status:
         t.Fatal(err)
     }
 
-    // Pod definitions using the same fully qualified GPU resource name
+    // Pod definitions – include both requests and limits for GPU
     podsYAML := `
 apiVersion: v1
 kind: Pod
@@ -77,6 +77,12 @@ spec:
     image: nginx
     resources:
       requests:
+        cpu: "500m"
+        memory: "256Mi"
+        nvidia.com/gpu: "1"
+      limits:
+        cpu: "500m"
+        memory: "256Mi"
         nvidia.com/gpu: "1"
 ---
 apiVersion: v1
@@ -89,6 +95,12 @@ spec:
     image: nginx
     resources:
       requests:
+        cpu: "500m"
+        memory: "256Mi"
+        nvidia.com/gpu: "1"
+      limits:
+        cpu: "500m"
+        memory: "256Mi"
         nvidia.com/gpu: "1"
 ---
 apiVersion: v1
@@ -101,6 +113,12 @@ spec:
     image: nginx
     resources:
       requests:
+        cpu: "500m"
+        memory: "256Mi"
+        nvidia.com/gpu: "1"
+      limits:
+        cpu: "500m"
+        memory: "256Mi"
         nvidia.com/gpu: "1"
 `
     podsFile := filepath.Join(clusterDir, "pods.yaml")
