@@ -67,30 +67,6 @@ status:
         t.Fatal(err)
     }
 
-    // Create the cluster config file (simon/v1alpha1 Config)
-    clusterConfigYAML := fmt.Sprintf(`
-apiVersion: simon/v1alpha1
-kind: Config
-metadata:
-  name: test-config
-spec:
-  cluster:
-    customConfig: %s
-    customConfig:
-      shufflePod: false
-  workloadTuningConfig:
-    ratio: 0.9
-    seed: 233
-  typicalPodsConfig:
-    isInvolvedCpuPods: true
-    podPopularityThreshold: 95
-    isConsideredGpuResWeight: false
-`, clusterDir)
-    clusterFile := filepath.Join(tmpDir, "cluster-config.yaml")
-    if err := os.WriteFile(clusterFile, []byte(clusterConfigYAML), 0644); err != nil {
-        t.Fatal(err)
-    }
-
     // Create pod definitions (these go in the cluster config directory)
     podsYAML := `
 apiVersion: v1
@@ -131,6 +107,33 @@ spec:
 `
     podsFile := filepath.Join(clusterDir, "pods.yaml")
     if err := os.WriteFile(podsFile, []byte(podsYAML), 0644); err != nil {
+        t.Fatal(err)
+    }
+
+    // Create the cluster config file (simon/v1alpha1 Config)
+    // Use absolute path for customConfig
+    absClusterDir, err := filepath.Abs(clusterDir)
+    if err != nil {
+        t.Fatal(err)
+    }
+    clusterConfigYAML := fmt.Sprintf(`
+apiVersion: simon/v1alpha1
+kind: Config
+metadata:
+  name: test-config
+spec:
+  cluster:
+    customConfig: %s
+  workloadTuningConfig:
+    ratio: 0.9
+    seed: 233
+  typicalPodsConfig:
+    isInvolvedCpuPods: true
+    podPopularityThreshold: 95
+    isConsideredGpuResWeight: false
+`, absClusterDir)
+    clusterFile := filepath.Join(tmpDir, "cluster-config.yaml")
+    if err := os.WriteFile(clusterFile, []byte(clusterConfigYAML), 0644); err != nil {
         t.Fatal(err)
     }
 
