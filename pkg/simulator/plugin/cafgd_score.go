@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/hkust-adsl/kubernetes-scheduler-simulator/pkg/type"
+	simontype "github.com/hkust-adsl/kubernetes-scheduler-simulator/pkg/type"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
@@ -13,6 +13,7 @@ import (
 
 const CAFGDScorePluginName = "CAFGDScore"
 
+// CAFGDScorePlugin implements the Cluster-Aware FGD algorithm.
 type CAFGDScorePlugin struct {
 	handle         framework.Handle
 	typicalPods    *simontype.TargetPodList
@@ -24,6 +25,7 @@ type CAFGDScorePlugin struct {
 
 var _ framework.ScorePlugin = &CAFGDScorePlugin{}
 
+// NewCAFGDScorePlugin creates a new CAFGD plugin instance.
 func NewCAFGDScorePlugin(configuration runtime.Object, handle framework.Handle, typicalPods *simontype.TargetPodList) (framework.Plugin, error) {
 	plugin := &CAFGDScorePlugin{
 		handle:         handle,
@@ -33,66 +35,77 @@ func NewCAFGDScorePlugin(configuration runtime.Object, handle framework.Handle, 
 		hierarchical:   true,
 		gpuResourceName: "gpu",
 	}
-	// parse configuration if needed
+	// Optionally parse configuration from 'configuration' object.
 	return plugin, nil
 }
 
+// Name returns the plugin name.
 func (p *CAFGDScorePlugin) Name() string {
 	return CAFGDScorePluginName
 }
 
+// Score computes a score for placing the pod on the given node.
+// Higher score means better placement (lower fragmentation gradient).
 func (p *CAFGDScorePlugin) Score(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) (int64, *framework.Status) {
-	// Get node info for the target node
-	nodeInfo, err := state.Snapshot().NodeInfos().Get(nodeName)
+	// Get the snapshot of the cluster.
+	snapshot := p.handle.Snapshot()
+	if snapshot == nil {
+		return 0, framework.NewStatus(framework.Error, "snapshot is nil")
+	}
+
+	// Get node info for the target node.
+	targetNodeInfo, err := snapshot.NodeInfos().Get(nodeName)
 	if err != nil {
 		return 0, framework.NewStatus(framework.Error, fmt.Sprintf("node %s not found", nodeName))
 	}
 
-	// Get all nodes for cluster-wide fragmentation
-	allNodes := state.Snapshot().NodeInfos().List()
+	// All nodes for cluster-wide fragmentation.
+	allNodes := snapshot.NodeInfos().List()
 
-	// Calculate current cluster fragmentation (baseline)
-	currentFrag := p.calculateClusterFragmentation(allNodes)
+	// Current fragmentation (baseline).
+	currentFrag := p.calculateClusterFragmentation(allNodes, "", nil)
 
-	// Simulate placement on this node (we need a copy; for simplicity, we calculate delta)
-	// In a real implementation, we would deep-copy the cluster state.
-	// For now, we approximate: we compute the fragmentation after adding pod to this node.
-	newFrag := p.calculateFragmentationAfterPlacement(allNodes, nodeInfo, pod)
+	// Fragmentation if we add the pod to the target node.
+	newFrag := p.calculateClusterFragmentation(allNodes, nodeName, pod)
 
+	// Fragmentation gradient = increase in fragmentation.
 	gradient := newFrag - currentFrag
-	// Convert gradient to score (0-100, higher is better)
-	maxGradient := 1.0 // heuristic
-	if maxGradient > 0 {
-		score := int64((1.0 - gradient/maxGradient) * 100)
-		if score < 0 {
-			score = 0
-		}
-		if score > 100 {
-			score = 100
-		}
-		return score, nil
+	// Convert gradient to score (0-100, higher is better).
+	// We use a simple heuristic: score = (1 - gradient) * 100, clipped.
+	score := int64((1.0 - gradient) * 100)
+	if score < 0 {
+		score = 0
 	}
-	return 100, nil
+	if score > 100 {
+		score = 100
+	}
+	return score, framework.NewStatus(framework.Success, "")
 }
 
+// ScoreExtensions returns nil (no normalization needed).
 func (p *CAFGDScorePlugin) ScoreExtensions() framework.ScoreExtensions {
 	return nil
 }
 
-// Helper functions – these should not import pkg/simulator.
-// They work with framework.NodeInfo and v1.Pod.
-
-func (p *CAFGDScorePlugin) calculateClusterFragmentation(nodes []*framework.NodeInfo) float64 {
-	// Implement fragmentation metric using framework.NodeInfo
-	// Example: sum of wasted GPU capacity due to fragmentation
+// calculateClusterFragmentation computes the total fragmentation across all nodes.
+// If addNode is non-empty, the pod is considered added to that node.
+func (p *CAFGDScorePlugin) calculateClusterFragmentation(nodes []*framework.NodeInfo, addNode string, pod *v1.Pod) float64 {
+	if len(nodes) == 0 {
+		return 0.0
+	}
 	var totalFrag float64
 	var totalGPUs int64
+
 	for _, node := range nodes {
 		gpuCap := p.getGPUAllocatable(node)
 		if gpuCap == 0 {
 			continue
 		}
-		nodeFrag := p.calculateNodeFragmentation(node)
+		var addPod *v1.Pod
+		if node.Node().Name == addNode {
+			addPod = pod
+		}
+		nodeFrag := p.calculateNodeFragmentation(node, addPod)
 		totalFrag += nodeFrag * float64(gpuCap)
 		totalGPUs += gpuCap
 	}
@@ -102,47 +115,40 @@ func (p *CAFGDScorePlugin) calculateClusterFragmentation(nodes []*framework.Node
 	return totalFrag / float64(totalGPUs)
 }
 
-func (p *CAFGDScorePlugin) calculateNodeFragmentation(nodeInfo *framework.NodeInfo) float64 {
-	// Simplified: compute fractional GPU usage
+// calculateNodeFragmentation computes fragmentation for a single node,
+// optionally including an extra pod.
+func (p *CAFGDScorePlugin) calculateNodeFragmentation(nodeInfo *framework.NodeInfo, addPod *v1.Pod) float64 {
 	gpuCap := p.getGPUAllocatable(nodeInfo)
 	if gpuCap == 0 {
 		return 0.0
 	}
+	// Sum GPU requests from existing pods.
 	var used float64
 	for _, podInfo := range nodeInfo.Pods {
 		used += float64(p.getGPURequest(podInfo.Pod))
 	}
-	// Fragmentation is the unused fractional part
-	return (used - math.Floor(used)) / float64(gpuCap)
-}
-
-func (p *CAFGDScorePlugin) calculateFragmentationAfterPlacement(allNodes []*framework.NodeInfo, targetNode *framework.NodeInfo, pod *v1.Pod) float64 {
-	// This should deep-copy and add pod to target node, then recalc.
-	// For brevity, we just add the pod's GPU request to the target node's used amount.
-	// In reality, you need to clone the cluster state; we'll approximate.
-	// We'll recalc fragmentation assuming the pod is placed.
-	// We'll create a temporary representation.
-	// For now, we just call calculateClusterFragmentation on a modified list.
-	// Since we cannot mutate, we'll compute delta directly.
-	gpuReq := float64(p.getGPURequest(pod))
-	if gpuReq == 0 {
-		return p.calculateClusterFragmentation(allNodes)
+	// Add the extra pod if specified.
+	if addPod != nil {
+		used += float64(p.getGPURequest(addPod))
 	}
-	// We need to simulate adding to target node.
-	// We'll compute fragmentation manually.
-	// For simplicity, we just return the current fragmentation (not accurate).
-	return p.calculateClusterFragmentation(allNodes)
+	// Fragmentation: fractional part of used GPUs divided by capacity.
+	fractional := used - math.Floor(used)
+	return fractional / float64(gpuCap)
 }
 
+// getGPUAllocatable returns the GPU capacity for a node.
 func (p *CAFGDScorePlugin) getGPUAllocatable(nodeInfo *framework.NodeInfo) int64 {
-	// Get GPU resource from node allocatable
 	if val, ok := nodeInfo.Node().Status.Allocatable[v1.ResourceName(p.gpuResourceName)]; ok {
 		return val.Value()
 	}
 	return 0
 }
 
+// getGPURequest extracts the total GPU request from a pod.
 func (p *CAFGDScorePlugin) getGPURequest(pod *v1.Pod) int64 {
+	if pod == nil {
+		return 0
+	}
 	var total int64
 	for _, container := range pod.Spec.Containers {
 		if val, ok := container.Resources.Requests[v1.ResourceName(p.gpuResourceName)]; ok {
