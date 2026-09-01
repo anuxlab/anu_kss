@@ -18,6 +18,7 @@ var plugins = []string{
 }
 
 func TestAllPlugins(t *testing.T) {
+    // Build the binary
     binPath := filepath.Join("..", "..", "bin", "simon")
     absBinPath, err := filepath.Abs(binPath)
     if err != nil {
@@ -40,18 +41,23 @@ func TestAllPlugins(t *testing.T) {
     }
     defer os.RemoveAll(tmpDir)
 
+    // Create cluster directory
     clusterDir := filepath.Join(tmpDir, "test-cluster")
     if err := os.MkdirAll(clusterDir, 0755); err != nil {
         t.Fatal(err)
     }
 
-    // Node: use "gpu" as resource name
+    // Node definition with both capacity and allocatable
     nodeYAML := `
 apiVersion: v1
 kind: Node
 metadata:
   name: node1
 status:
+  capacity:
+    cpu: "8"
+    memory: 16Gi
+    gpu: "2"
   allocatable:
     cpu: "8"
     memory: 16Gi
@@ -62,7 +68,7 @@ status:
         t.Fatal(err)
     }
 
-    // Pod: request "gpu"
+    // Pod definition with both requests and limits
     podYAML := `
 apiVersion: v1
 kind: Pod
@@ -92,6 +98,7 @@ spec:
         t.Fatal(err)
     }
 
+    // Cluster config
     clusterConfig := fmt.Sprintf(`
 apiVersion: simon/v1alpha1
 kind: Config
@@ -115,7 +122,7 @@ spec:
 
     for _, pluginName := range plugins {
         t.Run(pluginName, func(t *testing.T) {
-            schedYAML := fmt.Sprintf(`
+            schedulerYAML := fmt.Sprintf(`
 apiVersion: kubescheduler.config.k8s.io/v1beta1
 kind: KubeSchedulerConfiguration
 percentageOfNodesToScore: 100
@@ -154,11 +161,11 @@ profiles:
       gpuSelMethod: %s
 `, pluginName, pluginName, pluginName)
             schedFile := filepath.Join(tmpDir, fmt.Sprintf("scheduler-%s.yaml", pluginName))
-            if err := os.WriteFile(schedFile, []byte(schedYAML), 0644); err != nil {
+            if err := os.WriteFile(schedFile, []byte(schedulerYAML), 0644); err != nil {
                 t.Fatal(err)
             }
 
-            // Use "gpu" as the extended resource name
+            // Run simon apply with --extended-resources gpu
             cmd := exec.Command(
                 absBinPath,
                 "apply",
@@ -172,7 +179,9 @@ profiles:
                 t.Errorf("simon apply failed for %s: %v\nOutput:\n%s", pluginName, err, output)
                 return
             }
-            if strings.Contains(string(output), "error") || strings.Contains(string(output), "failed") {
+            // Check for errors or unscheduled pods
+            if strings.Contains(string(output), "error") || strings.Contains(string(output), "failed") ||
+                strings.Contains(string(output), "unscheduled") {
                 t.Errorf("Scheduling error for %s:\n%s", pluginName, output)
             }
         })
