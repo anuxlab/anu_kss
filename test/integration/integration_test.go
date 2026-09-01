@@ -1,60 +1,69 @@
 package integration
 
 import (
-	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strings"
-	"testing"
+    "fmt"
+    "os"
+    "os/exec"
+    "path/filepath"
+    "strings"
+    "testing"
 )
 
 // All plugin names as defined in pkg/type/const.go
 var plugins = []string{
-	"FGDScore",
-	"BestFitScore",
-	"DotProductScore",
-	"GPUPackingScore",
-	"GPUClusteringScore",
-	"RandomScore",
-	"CAFGDScore", // your new plugin
+    "FGDScore",
+    "BestFitScore",
+    "DotProductScore",
+    "GPUPackingScore",
+    "GPUClusteringScore",
+    "RandomScore",
+    "CAFGDScore",
 }
 
-// TestAllPlugins runs a simulation for each plugin and verifies success.
 func TestAllPlugins(t *testing.T) {
-	// Build the simon binary if not present
-	_, err := os.Stat("../../bin/simon")
-	if err != nil {
-		cmd := exec.Command("make", "build")
-		cmd.Dir = "../.."
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("failed to build simon: %v\n%s", err, out)
-		}
-	}
+    // Build the binary path relative to this test file
+    // The test runs from the package directory: test/integration/
+    // The binary is at the project root: ./bin/simon
+    // So the relative path is ../../bin/simon
+    binPath := filepath.Join("..", "..", "bin", "simon")
 
-	// Create temporary directory for output
-	tmpDir, err := os.MkdirTemp("", "simon-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+    // Check if the binary exists; if not, build it
+    if _, err := os.Stat(binPath); err != nil {
+        t.Logf("Binary not found at %s, building...", binPath)
+        cmd := exec.Command("make", "build")
+        cmd.Dir = "../.." // project root
+        out, err := cmd.CombinedOutput()
+        if err != nil {
+            t.Fatalf("failed to build simon: %v\n%s", err, out)
+        }
+        // Recheck after build
+        if _, err := os.Stat(binPath); err != nil {
+            t.Fatalf("binary still not found after build: %v", err)
+        }
+    }
 
-	// Cluster config (single node with 2 GPUs)
-	clusterConfig := `
+    // Create temporary directory for test files
+    tmpDir, err := os.MkdirTemp("", "simon-test-*")
+    if err != nil {
+        t.Fatal(err)
+    }
+    defer os.RemoveAll(tmpDir)
+
+    // Cluster config: one node with 2 GPUs
+    clusterYAML := `
 nodes:
 - name: node1
   cpu: 8
   memory: 16Gi
   gpu: 2
 `
+    clusterFile := filepath.Join(tmpDir, "cluster.yaml")
+    if err := os.WriteFile(clusterFile, []byte(clusterYAML), 0644); err != nil {
+        t.Fatal(err)
+    }
 
-	clusterFile := filepath.Join(tmpDir, "cluster.yaml")
-	if err := os.WriteFile(clusterFile, []byte(clusterConfig), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Pods to schedule: 3 pods each requesting 1 GPU
-	pods := `
+    // Pods: 3 pods, each requesting 1 GPU
+    podsYAML := `
 apiVersion: v1
 kind: Pod
 metadata:
@@ -91,15 +100,14 @@ spec:
       requests:
         gpu: "1"
 `
-	podsFile := filepath.Join(tmpDir, "pods.yaml")
-	if err := os.WriteFile(podsFile, []byte(pods), 0644); err != nil {
-		t.Fatal(err)
-	}
+    podsFile := filepath.Join(tmpDir, "pods.yaml")
+    if err := os.WriteFile(podsFile, []byte(podsYAML), 0644); err != nil {
+        t.Fatal(err)
+    }
 
-	for _, pluginName := range plugins {
-		t.Run(pluginName, func(t *testing.T) {
-			// Build scheduler config for this plugin
-			schedulerConfig := fmt.Sprintf(`
+    for _, pluginName := range plugins {
+        t.Run(pluginName, func(t *testing.T) {
+            schedulerYAML := fmt.Sprintf(`
 apiVersion: kubescheduler.config.k8s.io/v1
 kind: KubeSchedulerConfiguration
 profiles:
@@ -110,37 +118,32 @@ profiles:
       - name: %s
 `, pluginName)
 
-			schedFile := filepath.Join(tmpDir, fmt.Sprintf("scheduler-%s.yaml", pluginName))
-			if err := os.WriteFile(schedFile, []byte(schedulerConfig), 0644); err != nil {
-				t.Fatal(err)
-			}
+            schedFile := filepath.Join(tmpDir, fmt.Sprintf("scheduler-%s.yaml", pluginName))
+            if err := os.WriteFile(schedFile, []byte(schedulerYAML), 0644); err != nil {
+                t.Fatal(err)
+            }
 
-			// Run simon apply
-			cmd := exec.Command(
-				"../../bin/simon",
-				"apply",
-				"--extended-resources", "gpu",
-				"-f", clusterFile,
-				"-s", schedFile,
-				"-p", podsFile,
-				"-o", tmpDir, // output directory for logs
-			)
-			cmd.Dir = tmpDir
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Errorf("simon apply failed: %v\nOutput:\n%s", err, output)
-				return
-			}
+            // Run simon apply using the correct binary path
+            cmd := exec.Command(
+                binPath, // use the constructed path
+                "apply",
+                "--extended-resources", "gpu",
+                "-f", clusterFile,
+                "-s", schedFile,
+                "-p", podsFile,
+                "-o", tmpDir,
+            )
+            cmd.Dir = tmpDir // run in the temp directory
+            output, err := cmd.CombinedOutput()
+            if err != nil {
+                t.Errorf("simon apply failed for plugin %s: %v\nOutput:\n%s", pluginName, err, output)
+                return
+            }
 
-			// Verify that all pods are scheduled
-			// The scheduler writes a summary or we can parse the output
-			// For simplicity, check that there is no "pending" or "unschedulable" in logs
-			if strings.Contains(string(output), "pending") || strings.Contains(string(output), "unschedulable") {
-				t.Errorf("some pods remained pending:\n%s", output)
-			}
-
-			// Optionally, parse the final cluster state JSON if it's written
-			// For now, just verify exit code 0 and no error messages.
-		})
-	}
+            // Verify no pending/unschedulable pods
+            if strings.Contains(string(output), "pending") || strings.Contains(string(output), "unschedulable") {
+                t.Errorf("some pods remained pending for plugin %s:\n%s", pluginName, output)
+            }
+        })
+    }
 }
