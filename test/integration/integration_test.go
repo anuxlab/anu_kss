@@ -9,7 +9,6 @@ import (
     "testing"
 )
 
-// Plugins that are actually registered in the simulator.
 var plugins = []string{
     "FGDScore",
     "BestFitScore",
@@ -19,14 +18,12 @@ var plugins = []string{
 }
 
 func TestAllPlugins(t *testing.T) {
-    // Build the binary path
     binPath := filepath.Join("..", "..", "bin", "simon")
     absBinPath, err := filepath.Abs(binPath)
     if err != nil {
         t.Fatalf("failed to get absolute path: %v", err)
     }
 
-    // If binary not found, build it
     if _, err := os.Stat(absBinPath); err != nil {
         t.Logf("Building simon...")
         cmd := exec.Command("make", "build")
@@ -37,20 +34,18 @@ func TestAllPlugins(t *testing.T) {
         }
     }
 
-    // Create temporary directory for test files
     tmpDir, err := os.MkdirTemp("", "simon-test-*")
     if err != nil {
         t.Fatal(err)
     }
     defer os.RemoveAll(tmpDir)
 
-    // Create cluster config directory
     clusterDir := filepath.Join(tmpDir, "test-cluster")
     if err := os.MkdirAll(clusterDir, 0755); err != nil {
         t.Fatal(err)
     }
 
-    // Node definition – uses fully qualified resource name
+    // Node: use "gpu" as resource name
     nodeYAML := `
 apiVersion: v1
 kind: Node
@@ -60,14 +55,14 @@ status:
   allocatable:
     cpu: "8"
     memory: 16Gi
-    nvidia.com/gpu: "2"
+    gpu: "2"
 `
     nodeFile := filepath.Join(clusterDir, "node1.yaml")
     if err := os.WriteFile(nodeFile, []byte(nodeYAML), 0644); err != nil {
         t.Fatal(err)
     }
 
-    // Single pod with fully qualified GPU resource name
+    // Pod: request "gpu"
     podYAML := `
 apiVersion: v1
 kind: Pod
@@ -81,24 +76,22 @@ spec:
       requests:
         cpu: "100m"
         memory: "128Mi"
-        nvidia.com/gpu: "1"
+        gpu: "1"
       limits:
         cpu: "100m"
         memory: "128Mi"
-        nvidia.com/gpu: "1"
+        gpu: "1"
 `
     podFile := filepath.Join(clusterDir, "pods.yaml")
     if err := os.WriteFile(podFile, []byte(podYAML), 0644); err != nil {
         t.Fatal(err)
     }
 
-    // Absolute path to cluster directory for config
     absClusterDir, err := filepath.Abs(clusterDir)
     if err != nil {
         t.Fatal(err)
     }
 
-    // Cluster config (simon/v1alpha1 Config)
     clusterConfig := fmt.Sprintf(`
 apiVersion: simon/v1alpha1
 kind: Config
@@ -122,7 +115,6 @@ spec:
 
     for _, pluginName := range plugins {
         t.Run(pluginName, func(t *testing.T) {
-            // Scheduler config enabling only the plugin under test
             schedYAML := fmt.Sprintf(`
 apiVersion: kubescheduler.config.k8s.io/v1beta1
 kind: KubeSchedulerConfiguration
@@ -166,11 +158,11 @@ profiles:
                 t.Fatal(err)
             }
 
-            // Run simon apply with the fully qualified resource name
+            // Use "gpu" as the extended resource name
             cmd := exec.Command(
                 absBinPath,
                 "apply",
-                "--extended-resources", "nvidia.com/gpu",
+                "--extended-resources", "gpu",
                 "-f", clusterFile,
                 "-s", schedFile,
             )
@@ -180,7 +172,6 @@ profiles:
                 t.Errorf("simon apply failed for %s: %v\nOutput:\n%s", pluginName, err, output)
                 return
             }
-            // Check for errors in output
             if strings.Contains(string(output), "error") || strings.Contains(string(output), "failed") {
                 t.Errorf("Scheduling error for %s:\n%s", pluginName, output)
             }
