@@ -16,7 +16,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'  # match your go.mod
+          go-version: '1.21'
 
       - name: Build simon
         run: make build
